@@ -3,7 +3,7 @@ name: CI/CD Pipeline Orchestrator
 on:
   push:
     branches:
-      - 'master'
+      - 'main'        # Updated from master to main
       - 'feature/**'
 
 permissions:
