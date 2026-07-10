@@ -1,0 +1,109 @@
+name: Reusable DevOps Workflow
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      deploy_flag:
+        required: true
+        type: boolean
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+      AWS_ROLE_TO_ASSUME:
+        required: true
+      AWS_REGION:
+        required: true
+
+jobs:
+  build-and-analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Compile Java Application
+        run: mvn clean compile
+
+      # Static Code Analysis using PMD (Generates HTML Report)
+      - name: Run PMD Static Code Analysis
+        run: |
+          mvn pmd:pmd pmd:cpd
+          mkdir -p report-output
+          cp target/pmd.html report-output/index.html || echo "No report generated"
+
+      # Upload Analysis Report to GitHub Pages
+      - name: Upload artifact for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./report-output
+
+      - name: Deploy Static Analysis to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  publish-docker:
+    needs: build-and-analyze
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: actions/setup-buildx-action@v3
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/hello-world-spring:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/hello-world-spring:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-to-aws:
+    needs: publish-docker
+    if: ${{ inputs.deploy_flag }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials (OIDC - Best Practice)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      # Deploying to AWS App Runner (Serverless, Publicly Accessible Container)
+      - name: Deploy to AWS App Runner
+        run: |
+          aws apprunner create-service \
+            --service-name hello-world-spring-service \
+            --source-configuration '{
+              "ImageRepository": {
+                "ImageIdentifier": "'"${{ secrets.DOCKERHUB_USERNAME }}/hello-world-spring:latest"'",
+                "ImageConfiguration": {
+                  "Port": "8080"
+                },
+                "ImageRepositoryType": "PUBLIC"
+              },
+              "AutoDeploymentsEnabled": true
+            }' || aws apprunner start-deployment --service-arn $(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='hello-world-spring-service'].ServiceArn" --output text)
