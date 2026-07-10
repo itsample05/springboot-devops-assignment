@@ -15,8 +15,8 @@ jobs:
   run-pipeline:
     uses: ./.github/workflows/reusable-devops.yml
     with:
-      environment: ${{ github.ref_name == 'master' && 'production' || 'development' }}
-      deploy_flag: ${{ github.ref_name == 'master' }}
+      environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+      deploy_flag: ${{ github.ref_name == 'main' }}
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
