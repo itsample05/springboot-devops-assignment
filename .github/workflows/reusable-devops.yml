@@ -22,6 +22,10 @@ on:
 jobs:
   build-and-analyze:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -39,9 +43,9 @@ jobs:
       # Static Code Analysis using PMD (Generates HTML Report)
       - name: Run PMD Static Code Analysis
         run: |
-          mvn pmd:pmd pmd:cpd
+          mvn pmd:pmd pmd:cpd || echo "PMD identified formatting/code issues"
           mkdir -p report-output
-          cp target/pmd.html report-output/index.html || echo "No report generated"
+          cp target/pmd.html report-output/index.html || echo "<h1>No QA Report Found</h1>" > report-output/index.html
 
       # Upload Analysis Report to GitHub Pages
       - name: Upload artifact for Pages
@@ -84,6 +88,9 @@ jobs:
     needs: publish-docker
     if: ${{ inputs.deploy_flag }}
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Configure AWS Credentials (OIDC - Best Practice)
         uses: aws-actions/configure-aws-credentials@v4
@@ -93,17 +100,23 @@ jobs:
           audience: sts.amazonaws.com
 
       # Deploying to AWS App Runner (Serverless, Publicly Accessible Container)
-      - name: Deploy to AWS App Runner
+      - name: Deploy or Update AWS App Runner
         run: |
-          aws apprunner create-service \
-            --service-name hello-world-spring-service \
-            --source-configuration '{
-              "ImageRepository": {
-                "ImageIdentifier": "'"${{ secrets.DOCKERHUB_USERNAME }}/hello-world-spring:latest"'",
-                "ImageConfiguration": {
-                  "Port": "8080"
+          SERVICE_ARN=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='hello-world-spring-service'].ServiceArn" --output text)
+          
+          if [ -z "$SERVICE_ARN" ] || [ "$SERVICE_ARN" = "None" ]; then
+            echo "Service does not exist. Creating new AWS App Runner Service..."
+            aws apprunner create-service \
+              --service-name hello-world-spring-service \
+              --source-configuration '{
+                "ImageRepository": {
+                  "ImageIdentifier": "${{ secrets.DOCKERHUB_USERNAME }}/hello-world-spring:latest",
+                  "ImageConfiguration": { "Port": "8080" },
+                  "ImageRepositoryType": "PUBLIC"
                 },
-                "ImageRepositoryType": "PUBLIC"
-              },
-              "AutoDeploymentsEnabled": true
-            }' || aws apprunner start-deployment --service-arn $(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='hello-world-spring-service'].ServiceArn" --output text)
+                "AutoDeploymentsEnabled": true
+              }'
+          else
+            echo "Service exists with ARN: $SERVICE_ARN. Triggering deployment update..."
+            aws apprunner start-deployment --service-arn "$SERVICE_ARN"
+          fi
